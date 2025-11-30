@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: anime_recommendation_system
+Version: 0.1.0
+Author: Nevin A S
+Author-email: nevinajithkumar@gmail.com
+License-File: LICENSE.md
+Requires-Dist: ultralytics
+Requires-Dist: numpy
+Requires-Dist: opencv-python
+Requires-Dist: pyserial
+Dynamic: author
+Dynamic: author-email
+Dynamic: license-file
+Dynamic: requires-dist

@@ -1,0 +1,7 @@
+/ruff.toml
+/Servo_test
+node_modules
+venv
+__pycache__
+*.log
+*.pyc
