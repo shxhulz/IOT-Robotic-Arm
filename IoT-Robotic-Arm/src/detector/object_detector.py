@@ -4,8 +4,8 @@ Module for object detection using YOLO models.
 
 from ultralytics import YOLO
 
-from src.config.config import CONFIDENCE_THRESHOLD, MODEL_PATH, TRACKING_ENABLED
-from src.detector.bbox_utils import BoundingBox
+from config.config import CONFIDENCE_THRESHOLD, MODEL_PATH, TRACKING_ENABLED
+from detector.bbox_utils import BoundingBox
 
 
 class ObjectDetector:

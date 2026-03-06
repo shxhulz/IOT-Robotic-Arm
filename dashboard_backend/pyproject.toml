@@ -1,0 +1,20 @@
+[project]
+name = "dashboard-backend"
+version = "0.1.0"
+description = "IoT Robotic Arm Dashboard Backend (FastAPI + Kafka)"
+authors = [{ name = "Nevin A S", email = "nevinajithkumar@gmail.com" }]
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy",
+    "aiokafka",
+    "kafka-python",
+    "pydantic",
+    "python-multipart",
+    "websockets",
+]
+
+[tool.uv]
+package = false
+

@@ -2,7 +2,7 @@ import time
 
 import cv2
 
-from src.config.config import (
+from config.config import (
     CAMER_WIDTH,
     CAMERA_HEIGHT,
     CAMERA_INDEX,
@@ -10,9 +10,9 @@ from src.config.config import (
     DETECTION_CONFIDENCE_THRESHOLD,
     SERVO_PORT,
 )
-from src.controller.servo_controller import ServoControl
-from src.detector.object_detector import ObjectDetector
-from src.utils.logger import get_logger
+from controller.servo_controller import ServoControl
+from detector.object_detector import ObjectDetector
+from utils.logger import get_logger
 
 import json
 from datetime import datetime

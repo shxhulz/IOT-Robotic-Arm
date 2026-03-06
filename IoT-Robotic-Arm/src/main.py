@@ -1,6 +1,6 @@
-from src.config.config import LOG_LEVEL
-from src.controller.robotic_arm_controller import RoboticArmController
-from src.utils.logger import get_logger
+from config.config import LOG_LEVEL
+from controller.robotic_arm_controller import RoboticArmController
+from utils.logger import get_logger
 
 logger = get_logger(__name__)
 logger.setLevel(LOG_LEVEL)
