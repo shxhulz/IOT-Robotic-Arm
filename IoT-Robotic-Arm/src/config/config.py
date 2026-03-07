@@ -6,7 +6,7 @@ Contains paths, model parameters, and other settings.
 LOG_LEVEL = "DEBUG"  # Set to "DEBUG", "INFO", "WARNING", "ERROR", or "CRITICAL"
 
 # Camera settings
-CAMERA_INDEX = "http://192.168.0.176:81/stream"
+CAMERA_INDEX = "http://192.168.4.1/stream"
 CAMER_WIDTH = 640
 CAMERA_HEIGHT = 480
 
