@@ -7,6 +7,7 @@ import time
 
 import serial
 
+from config.config import SERIAL_OK_TIMEOUT
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -26,7 +27,7 @@ class ServoControl:
             "23": "S2A38S3A122S4A120S5A105",
             "24": "S2A26S3A103S4A120S5A105",
             "25": "S2A25S3A100S4A115S5A105",
-            "26": "S2A10S3A88S4A115S5A105`",
+            "26": "S2A10S3A88S4A115S5A105",
             "rest": "S1A75S2A80S3A145S4A70S5A90",
             "neutral": "S1A90S2A90S3A90S4A90",
             "paperDisposal": "S1A70S2A120S3A40",
@@ -34,9 +35,49 @@ class ServoControl:
             "metalDisposal": "S1A100S2A120S3A40",
         }
         self.ser = serial.Serial(port=COM, baudrate=9600, timeout=1)
-        (f"Connected to Arduino on {COM}")
+        logger.info(f"Connected to Arduino on {COM}")
         self.ser.write("S1A90S3A90S5A90S7A90S9A90\n".encode("utf-8"))
-        logger.info("Servos set to initial postions (90 degrees)")
+        logger.info("Servos set to initial positions (90 degrees)")
+
+    # ── Non-blocking API used by the robot thread ─────────────────────────
+
+    def send_command(self, cmd_string: str) -> bool:
+        """
+        Send a servo command string to the Arduino and wait for 'OK'.
+        This is the ONLY method the robot thread should use.
+
+        Args:
+            cmd_string: e.g. "S2A58S3A150S4A115S5A105"
+
+        Returns:
+            True if OK was received, False on timeout.
+        """
+        full_command = cmd_string.strip() + "\n"
+        logger.debug(f"Serial TX: {full_command.strip()}")
+        self.ser.write(full_command.encode("utf-8"))
+        return self.wait_for_ok(timeout=SERIAL_OK_TIMEOUT)
+
+    def wait_for_ok(self, timeout: float = 30.0) -> bool:
+        """
+        Read serial lines until 'OK' is received or timeout expires.
+
+        Returns:
+            True if OK received, False on timeout.
+        """
+        start = time.monotonic()
+        while (time.monotonic() - start) < timeout:
+            if self.ser.in_waiting > 0:
+                line = self.ser.readline().decode("utf-8").strip()
+                logger.debug(f"Serial RX: {line}")
+                if "OK" in line:
+                    logger.debug("OK acknowledgement received from Arduino")
+                    return True
+            else:
+                time.sleep(0.05)  # Small sleep to avoid busy-waiting
+        logger.warning(f"Timed out waiting for OK after {timeout}s")
+        return False
+
+    # ── Legacy blocking API (kept for backward compat) ────────────────────
 
     def read_serial(self):
         """
@@ -45,9 +86,6 @@ class ServoControl:
 
         :return: False when "OK" is detected else True
         """
-
-        # return False # For testing purposes, This will take allow to read data from camera continously
-
         try:
             while True:
                 if self.ser.in_waiting > 0:
@@ -81,7 +119,7 @@ class ServoControl:
         time.sleep(0.1)
         while self.read_serial():
             time.sleep(0.1)  # Wait for the servo to finish moving
-        logger.info("Servo moved sucessfully")
+        logger.info("Servo moved successfully")
 
     def closeGripper(self):
         self.moveServoSingle(5, 40)

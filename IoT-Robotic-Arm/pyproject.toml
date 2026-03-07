@@ -16,6 +16,7 @@ dependencies = [
     "rich>=14.3.3",
     "kafka-python-ng>=2.2.3",
     "lap>=0.5.12",
+    "minio>=7.2.20",
 ]
 
 [[tool.uv.index]]

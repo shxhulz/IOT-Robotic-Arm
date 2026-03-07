@@ -6,8 +6,8 @@ Contains paths, model parameters, and other settings.
 LOG_LEVEL = "DEBUG"  # Set to "DEBUG", "INFO", "WARNING", "ERROR", or "CRITICAL"
 
 # Camera settings
-CAMERA_INDEX = "http://192.168.4.1/stream"
-CAMER_WIDTH = 640
+CAMERA_STREAM_URL = "http://192.168.4.1/stream"
+CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
 
 # YOLO model settings
@@ -27,3 +27,11 @@ GRIPPER_SERVO = 5
 GRIPPER_OPEN_ANGLE = 105
 GRIPPER_CLOSE_ANGLE = 1
 CENTER_THRESHOLD = 10  # Pixels from center to consider object centered
+
+# Threading & Queue settings
+FRAME_QUEUE_SIZE = 5  # Max frames buffered between camera and vision threads
+CMD_QUEUE_SIZE = 5  # Max commands buffered between vision and robot threads
+DETECTION_STABILITY_THRESHOLD = 5  # Consecutive frames with detection required before acting
+
+# Serial communication
+SERIAL_OK_TIMEOUT = 30  # Seconds to wait for OK response from Arduino
