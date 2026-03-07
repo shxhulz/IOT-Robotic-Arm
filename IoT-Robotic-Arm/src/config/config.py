@@ -35,3 +35,11 @@ DETECTION_STABILITY_THRESHOLD = 5  # Consecutive frames with detection required 
 
 # Serial communication
 SERIAL_OK_TIMEOUT = 30  # Seconds to wait for OK response from Arduino
+
+# Minio settings
+MINIO_ENDPOINT = "localhost:9000"
+MINIO_ACCESS_KEY = "minioadmin"
+MINIO_SECRET_KEY = "minioadmin"
+MINIO_BUCKET_NAME = "camera-frames"
+MINIO_UPLOAD_INTERVAL = 2  # Seconds between frame uploads
+MINIO_SECURE = False  # Set to True if using HTTPS

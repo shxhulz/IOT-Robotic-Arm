@@ -13,8 +13,10 @@ by a threading.Lock.
 import threading
 import time
 from queue import Empty, Full, Queue
+from io import BytesIO
 
 import cv2
+from minio import Minio
 
 from config.config import (
     CAMERA_HEIGHT,
@@ -27,6 +29,12 @@ from config.config import (
     FRAME_QUEUE_SIZE,
     SERVO_PORT,
     WINDOW_NAME,
+    MINIO_ENDPOINT,
+    MINIO_ACCESS_KEY,
+    MINIO_SECRET_KEY,
+    MINIO_BUCKET_NAME,
+    MINIO_UPLOAD_INTERVAL,
+    MINIO_SECURE,
 )
 from controller.servo_controller import ServoControl
 from detector.object_detector import ObjectDetector
@@ -127,6 +135,22 @@ class RoboticArmController:
         self.producer = SafeProducer()
         self.robot_id = "robot_1"
 
+        # ── Minio Client ──
+        try:
+            self.minio_client = Minio(
+                MINIO_ENDPOINT,
+                access_key=MINIO_ACCESS_KEY,
+                secret_key=MINIO_SECRET_KEY,
+                secure=MINIO_SECURE,
+            )
+            # Check if bucket exists, create if not
+            if not self.minio_client.bucket_exists(MINIO_BUCKET_NAME):
+                self.minio_client.make_bucket(MINIO_BUCKET_NAME)
+            logger.info(f"Minio client initialized. Bucket: {MINIO_BUCKET_NAME}")
+        except Exception as e:
+            logger.error(f"Failed to initialize Minio client: {e}")
+            self.minio_client = None
+
         # ── Frame dimensions ──
         self.frame_width = CAMERA_WIDTH
         self.frame_height = CAMERA_HEIGHT
@@ -170,6 +194,30 @@ class RoboticArmController:
 
     # ── Thread 1: Camera capture ──────────────────────────────────────────
 
+    def _upload_frame_to_minio(self, frame):
+        """Helper to upload frame to Minio in a separate thread."""
+        if not self.minio_client:
+            return
+
+        try:
+            # Encode frame to jpg
+            _, buffer = cv2.imencode(".jpg", frame)
+            data = BytesIO(buffer)
+            
+            # Generate object name with timestamp
+            object_name = f"frame_{int(time.time() * 1000)}.jpg"
+            
+            self.minio_client.put_object(
+                MINIO_BUCKET_NAME,
+                object_name,
+                data,
+                len(buffer),
+                content_type="image/jpeg",
+            )
+            logger.debug(f"Uploaded frame to Minio: {object_name}") # Commented out to reduce noise
+        except Exception as e:
+            logger.error(f"Failed to upload frame to Minio: {e}")
+
     def camera_thread(self):
         """
         Continuously capture frames from the RTSP stream and push
@@ -188,6 +236,7 @@ class RoboticArmController:
 
         logger.info("Camera stream opened successfully.")
         prev_time = time.monotonic()
+        last_upload_time = 0
         frame_count = 0
         consecutive_errors = 0
 
@@ -209,6 +258,16 @@ class RoboticArmController:
 
             consecutive_errors = 0
             frame_count += 1
+
+            # Minio Upload (every MINIO_UPLOAD_INTERVAL seconds)
+            current_time = time.time()
+            if current_time - last_upload_time >= MINIO_UPLOAD_INTERVAL:
+                threading.Thread(
+                    target=self._upload_frame_to_minio,
+                    args=(frame.copy(),), # Pass a copy to avoid race conditions if frame is modified
+                    daemon=True
+                ).start()
+                last_upload_time = current_time
 
             # FPS calculation (every 1 second)
             now = time.monotonic()
