@@ -1,5 +1,6 @@
 import os
 import logging
+import mimetypes
 
 from config import (
     MINIO_ENDPOINT,
@@ -43,13 +44,17 @@ class MinioHandler:
         objects = self.client.list_objects(MINIO_BUCKET_NAME, recursive=True)
         downloaded_files: list[str] = []
         skipped = 0
+        skipped_non_images = 0
+        discovered = 0
 
         for obj in objects:
+            discovered += 1
             if len(downloaded_files) >= limit:
                 break
 
             ext = os.path.splitext(obj.object_name)[1].lower()
             if ext not in VALID_IMAGE_EXTENSIONS:
+                skipped_non_images += 1
                 continue
 
             local_name = os.path.basename(obj.object_name)
@@ -72,12 +77,68 @@ class MinioHandler:
                 )
 
         logger.info(
+            "MinIO scan summary: discovered=%d, skipped_non_images=%d, selected=%d (limit=%d).",
+            discovered,
+            skipped_non_images,
+            len(downloaded_files),
+            limit,
+        )
+        logger.info(
             "Downloaded %d images (%d already existed) from bucket '%s'.",
             len(downloaded_files) - skipped,
             skipped,
             MINIO_BUCKET_NAME,
         )
         return downloaded_files
+
+    def upload_file(self, local_path: str, object_name: str, bucket_name: str = MINIO_BUCKET_NAME) -> bool:
+        """Upload one local file to MinIO."""
+        if not os.path.isfile(local_path):
+            logger.warning("Upload skipped: local file missing: %s", local_path)
+            return False
+
+        content_type, _ = mimetypes.guess_type(local_path)
+        content_type = content_type or "application/octet-stream"
+
+        try:
+            self.client.fput_object(
+                bucket_name,
+                object_name,
+                local_path,
+                content_type=content_type,
+            )
+            logger.info("Uploaded to MinIO: %s -> %s/%s", local_path, bucket_name, object_name)
+            return True
+        except S3Error:
+            logger.exception("Failed to upload %s to %s/%s", local_path, bucket_name, object_name)
+            return False
+
+    def upload_directory(self, local_dir: str, object_prefix: str, bucket_name: str = MINIO_BUCKET_NAME) -> dict:
+        """Upload all files in a directory tree into a MinIO object prefix."""
+        if not os.path.isdir(local_dir):
+            logger.warning("Upload directory skipped: missing directory: %s", local_dir)
+            return {"uploaded": 0, "failed": 0}
+
+        uploaded = 0
+        failed = 0
+        for root, _, files in os.walk(local_dir):
+            for file_name in files:
+                local_path = os.path.join(root, file_name)
+                rel_path = os.path.relpath(local_path, local_dir).replace("\\", "/")
+                object_name = f"{object_prefix.rstrip('/')}/{rel_path}"
+                if self.upload_file(local_path, object_name, bucket_name=bucket_name):
+                    uploaded += 1
+                else:
+                    failed += 1
+
+        logger.info(
+            "Directory upload summary: source=%s, prefix=%s, uploaded=%d, failed=%d",
+            local_dir,
+            object_prefix,
+            uploaded,
+            failed,
+        )
+        return {"uploaded": uploaded, "failed": failed}
 
 
 if __name__ == "__main__":

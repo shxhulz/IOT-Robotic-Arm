@@ -2,6 +2,7 @@
 Configuration file for the object detection and tracking system.
 Contains paths, model parameters, and other settings.
 """
+import os
 
 LOG_LEVEL = "DEBUG"  # Set to "DEBUG", "INFO", "WARNING", "ERROR", or "CRITICAL"
 

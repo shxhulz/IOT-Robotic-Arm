@@ -72,7 +72,11 @@ with DAG(
     t_sam2 = DockerOperator(
         task_id="process_with_sam2",
         image="ultralytics/ultralytics:latest",
-        command=f"bash -c 'pip install git+https://github.com/facebookresearch/sam2.git && python {SCRIPTS_DIR}/process_sam2.py'",
+        command=(
+            f"bash -c 'pip install git+https://github.com/facebookresearch/sam2.git "
+            "open_clip_torch minio && "
+            f"python {SCRIPTS_DIR}/process_sam2.py'"
+        ),
         mounts=[
             Mount(
                 source=HOST_INCLUDE_DIR, 

@@ -12,10 +12,14 @@ logger = logging.getLogger(__name__)
 
 
 def main():
+    logger.info("Download stage started.")
     handler = MinioHandler()
     images = handler.download_images(limit=100_000)
     count = len(images)
     logger.info("Downloaded %d images from MinIO.", count)
+    if count:
+        preview = [os.path.basename(p) for p in images[:10]]
+        logger.info("Sample downloaded image names (up to 10): %s", preview)
 
     if count == 0:
         logger.error(

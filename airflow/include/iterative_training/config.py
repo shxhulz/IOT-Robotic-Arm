@@ -14,6 +14,13 @@ TRAINING_DATA_DIR = os.getenv(
 )
 IMAGES_DIR = os.path.join(TRAINING_DATA_DIR, "images")
 LABELS_DIR = os.path.join(TRAINING_DATA_DIR, "labels")
+POSTMORTEM_DIR = os.path.join(TRAINING_DATA_DIR, "postmortem")
+POSTMORTEM_ANNOTATED_DIR = os.path.join(POSTMORTEM_DIR, "annotated_images")
+POSTMORTEM_REPORTS_DIR = os.path.join(POSTMORTEM_DIR, "reports")
+MINIO_POSTMORTEM_PREFIX = os.getenv("MINIO_POSTMORTEM_PREFIX", "postmortem")
+
+MATERIAL_CLASSES = ["paper", "plastic", "metal"]
+MATERIAL_CLASS_TO_ID = {name: idx for idx, name in enumerate(MATERIAL_CLASSES)}
 
 TRAIN_IMAGES_DIR = os.path.join(TRAINING_DATA_DIR, "train", "images")
 TRAIN_LABELS_DIR = os.path.join(TRAINING_DATA_DIR, "train", "labels")
@@ -39,3 +46,5 @@ SAM2_BATCH_SIZE = int(os.getenv("SAM2_BATCH_SIZE", "8"))
 
 os.makedirs(IMAGES_DIR, exist_ok=True)
 os.makedirs(LABELS_DIR, exist_ok=True)
+os.makedirs(POSTMORTEM_ANNOTATED_DIR, exist_ok=True)
+os.makedirs(POSTMORTEM_REPORTS_DIR, exist_ok=True)

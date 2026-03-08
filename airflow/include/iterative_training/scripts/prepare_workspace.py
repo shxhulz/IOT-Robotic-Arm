@@ -8,7 +8,13 @@ import logging
 
 # Add parent so we can import config as a sibling module
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from config import IMAGES_DIR, LABELS_DIR, TRAINING_DATA_DIR
+from config import (
+    IMAGES_DIR,
+    LABELS_DIR,
+    TRAINING_DATA_DIR,
+    POSTMORTEM_ANNOTATED_DIR,
+    POSTMORTEM_REPORTS_DIR,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -31,7 +37,7 @@ def main():
     except Exception as e:
         logger.warning("Could not check CUDA availability: %s", e)
 
-    for directory in [IMAGES_DIR, LABELS_DIR]:
+    for directory in [IMAGES_DIR, LABELS_DIR, POSTMORTEM_ANNOTATED_DIR, POSTMORTEM_REPORTS_DIR]:
         if os.path.exists(directory):
             shutil.rmtree(directory)
             logger.info("Cleaned directory: %s", directory)

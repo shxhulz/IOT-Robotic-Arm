@@ -13,6 +13,7 @@ from config import (
     YOLO_IMG_SIZE,
     MLFLOW_TRACKING_URI,
     MLFLOW_EXPERIMENT_NAME,
+    MATERIAL_CLASSES,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,17 +62,44 @@ class YOLOTrainer:
                 )
             logger.info("%s split: %d images in %s", split_name, image_count, split_dir)
 
+        train_label_counts = self._count_split_labels("train")
+        val_label_counts = self._count_split_labels("val")
+        logger.info("Train label distribution: %s", train_label_counts)
+        logger.info("Val label distribution: %s", val_label_counts)
+
         data = {
             "train": train_images,
             "val": val_images,
-            "nc": 3,
-            "names": ["object"],
+            "nc": len(MATERIAL_CLASSES),
+            "names": MATERIAL_CLASSES,
         }
 
         with open(self.data_yaml_path, "w") as f:
             yaml.dump(data, f, default_flow_style=False)
 
         logger.info("Created data.yaml at %s", self.data_yaml_path)
+        logger.info("YOLO classes configured: nc=%d names=%s", len(MATERIAL_CLASSES), MATERIAL_CLASSES)
+
+    def _count_split_labels(self, split_name: str) -> dict:
+        label_dir = os.path.join(TRAINING_DATA_DIR, split_name, "labels")
+        counts = {name: 0 for name in MATERIAL_CLASSES}
+        counts["unknown"] = 0
+
+        if not os.path.isdir(label_dir):
+            return counts
+
+        class_map = {str(idx): name for idx, name in enumerate(MATERIAL_CLASSES)}
+        label_files = [f for f in os.listdir(label_dir) if f.lower().endswith(".txt")]
+        for label_file in label_files:
+            label_path = os.path.join(label_dir, label_file)
+            with open(label_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if not parts:
+                        continue
+                    class_name = class_map.get(parts[0], "unknown")
+                    counts[class_name] += 1
+        return counts
 
     def train(self, epochs=YOLO_TRAIN_EPOCHS, img_size=YOLO_IMG_SIZE):
         """Trains the YOLO model with MLflow tracking."""
@@ -177,4 +205,3 @@ class YOLOTrainer:
 
         logger.warning("best.pt not found at %s", best_pt)
         return None
-
