@@ -15,6 +15,7 @@ from config import (
 )
 from minio_handler import MinioHandler
 from sam_processor import SAMProcessor, SAM2_AVAILABLE
+from material_classifier import MATERIAL_CLASSIFIER_AVAILABLE
 from yolo_trainer import YOLOTrainer
 
 logging.basicConfig(
@@ -74,8 +75,8 @@ def run_iterative_training():
         return
 
     # 2. Process images with SAM2
-    if not SAM2_AVAILABLE:
-        logger.error("SAM2 is not available. Cannot generate labels.")
+    if not SAM2_AVAILABLE or not MATERIAL_CLASSIFIER_AVAILABLE:
+        logger.error("SAM2 or DINOv2/CLIP dependencies are not available. Cannot generate labels.")
         return
 
     processor = SAMProcessor()

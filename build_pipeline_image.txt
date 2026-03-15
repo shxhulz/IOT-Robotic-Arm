@@ -1,0 +1,7 @@
+# To build the required Docker image for the iterative training pipeline:
+
+# 1. Navigate to the airflow directory:
+cd D:\RoboticArm\IOT-Robotic-Arm\airflow
+
+# 2. Run the Docker build command:
+docker build -t robotic-arm-material-pipeline:latest -f include/iterative_training/docker/Dockerfile .

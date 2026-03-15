@@ -127,9 +127,14 @@ python src/main.py
 ## ⚙️ Configuration
 
 ### Controller Config (`src/config/config.py`)
--   **CAMERA_INDEX**: URL for IP Camera or 0 for USB.
+-   **CAMERA_STREAM_URL**: URL for the IP camera stream.
 -   **SERVO_PORT**: COM port for Arduino (e.g., `COM3`).
 -   **CONFIDENCE_THRESHOLD**: YOLO detection sensitivity.
+-   **CENTER_THRESHOLD**: Pixel tolerance used to treat a target as centered.
+-   **CENTERING_OFFSET_X**: Pixel offset that shifts the desired visual centering point left/right to match gripper calibration.
+-   **CENTERING_STEP_DEGREES**: Base-servo correction size used during centering.
+-   **CENTERING_SETTLE_SECONDS**: Delay before the post-centering camera recheck.
+-   **CENTERING_MAX_ADJUSTMENTS**: Safety limit for centering retries per pickup task.
 
 ### Dashboard Config
 -   **Backend**: `dashboard_backend/main.py` (Port 8000)

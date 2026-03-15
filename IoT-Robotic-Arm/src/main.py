@@ -3,7 +3,6 @@ from controller.robotic_arm_controller import RoboticArmController
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
-logger.setLevel(LOG_LEVEL)
 
 if __name__ == "__main__":
     try:

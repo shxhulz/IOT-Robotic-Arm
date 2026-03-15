@@ -4,7 +4,7 @@ Contains paths, model parameters, and other settings.
 """
 import os
 
-LOG_LEVEL = "DEBUG"  # Set to "DEBUG", "INFO", "WARNING", "ERROR", or "CRITICAL"
+LOG_LEVEL = "INFO"  # Set to "DEBUG", "INFO", "WARNING", "ERROR", or "CRITICAL"
 
 # Camera settings
 CAMERA_STREAM_URL = "http://192.168.4.1/stream"
@@ -12,7 +12,7 @@ CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
 
 # YOLO model settings
-MODEL_PATH = "src/yolo/weights/best.pt"
+MODEL_PATH = r"D:\RoboticArm\IOT-Robotic-Arm\IoT-Robotic-Arm\scripts\mlruns\1\11bd7dfa85604418addc2e9e9b7c4a73\artifacts\weights\best.pt"
 CONFIDENCE_THRESHOLD = 0.4
 TRACKING_ENABLED = True
 
@@ -28,6 +28,11 @@ GRIPPER_SERVO = 5
 GRIPPER_OPEN_ANGLE = 105
 GRIPPER_CLOSE_ANGLE = 1
 CENTER_THRESHOLD = 10  # Pixels from center to consider object centered
+CENTERING_OFFSET_X = 10  # Pixels to shift desired centering target from frame center
+CENTERING_STEP_DEGREES = 1  # Base-servo degrees per centering correction step
+CENTERING_SETTLE_SECONDS = 1.0  # Wait time before post-centering verification
+CENTERING_MAX_ADJUSTMENTS = 8  # Maximum centering correction attempts per task
+CENTERING_VISION_TIMEOUT = 1.5  # Max seconds to wait for a fresh vision update
 
 # Threading & Queue settings
 FRAME_QUEUE_SIZE = 5  # Max frames buffered between camera and vision threads

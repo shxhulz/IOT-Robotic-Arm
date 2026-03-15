@@ -16,12 +16,20 @@ from queue import Empty, Full, Queue
 from io import BytesIO
 
 import cv2
+import joblib
+import pandas as pd
+import os
 from minio import Minio
 
 from config.config import (
     CAMERA_HEIGHT,
     CAMERA_STREAM_URL,
     CAMERA_WIDTH,
+    CENTERING_MAX_ADJUSTMENTS,
+    CENTERING_OFFSET_X,
+    CENTERING_SETTLE_SECONDS,
+    CENTERING_STEP_DEGREES,
+    CENTERING_VISION_TIMEOUT,
     CENTER_THRESHOLD,
     CMD_QUEUE_SIZE,
     DETECTION_CONFIDENCE_THRESHOLD,
@@ -92,7 +100,7 @@ class RoboticArmController:
         self.frame_queue: Queue = Queue(maxsize=FRAME_QUEUE_SIZE)
         self.cmd_queue: Queue = Queue(maxsize=CMD_QUEUE_SIZE)
         logger.debug(
-            f"Queues created – frame_queue(maxsize={FRAME_QUEUE_SIZE}), "
+            f"Queues created - frame_queue(maxsize={FRAME_QUEUE_SIZE}), "
             f"cmd_queue(maxsize={CMD_QUEUE_SIZE})"
         )
 
@@ -105,6 +113,11 @@ class RoboticArmController:
         # ── Latest annotated frame for display (guarded by _frame_lock) ──
         self._frame_lock = threading.Lock()
         self._display_frame = None
+
+        # ── Latest detections for robot-side centering verification ──
+        self._vision_lock = threading.Lock()
+        self._latest_detections = []
+        self._latest_vision_update = 0.0
 
         # ── FPS tracking for camera overlay ──
         self._fps = 0.0
@@ -155,6 +168,23 @@ class RoboticArmController:
         self.frame_width = CAMERA_WIDTH
         self.frame_height = CAMERA_HEIGHT
         self.center_threshold = CENTER_THRESHOLD
+        self.centering_offset_x = CENTERING_OFFSET_X
+        self.centering_step_degrees = CENTERING_STEP_DEGREES
+        self.centering_settle_seconds = CENTERING_SETTLE_SECONDS
+        self.centering_max_adjustments = CENTERING_MAX_ADJUSTMENTS
+        self.centering_vision_timeout = CENTERING_VISION_TIMEOUT
+
+        # ── ML Model for One-Shot Centering ──
+        model_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+            "..", "models", "position_to_angle_model.pkl"
+        )
+        try:
+            self.centering_model = joblib.load(model_path)
+            logger.info(f"Loaded centering ML model from: {model_path}")
+        except Exception as e:
+            logger.warning(f"Failed to load centering ML model from {model_path}: {e}")
+            self.centering_model = None
 
     # ── State helpers (thread-safe) ───────────────────────────────────────
 
@@ -169,7 +199,7 @@ class RoboticArmController:
             old = self._robot_state
             self._robot_state = value
         if old != value:
-            logger.info(f"robot_state: {old} → {value}")
+            logger.info(f"robot_state: {old} -> {value}")
 
     @property
     def target_locked(self):
@@ -191,6 +221,217 @@ class RoboticArmController:
     def detection_counter(self, value):
         with self._state_lock:
             self._detection_counter = value
+
+    def _publish_latest_detections(self, detections):
+        with self._vision_lock:
+            self._latest_detections = list(detections) if detections else []
+            self._latest_vision_update = time.monotonic()
+
+    def _get_latest_target_bbox(self, object_class=None, min_timestamp=0.0):
+        with self._vision_lock:
+            detections = list(self._latest_detections)
+            updated_at = self._latest_vision_update
+
+        if updated_at < min_timestamp or not detections:
+            return None, updated_at
+
+        if object_class is not None:
+            detections = [
+                detection
+                for detection in detections
+                if detection.class_name == object_class
+            ]
+            if not detections:
+                return None, updated_at
+
+        detections.sort(
+            key=lambda detection: detection.confidence or 0.0,
+            reverse=True,
+        )
+        return detections[0], updated_at
+
+    def _wait_for_target_bbox(self, object_class, min_timestamp=0.0, timeout=None):
+        timeout = (
+            self.centering_vision_timeout if timeout is None else timeout
+        )
+        start = time.monotonic()
+
+        while not self._shutdown.is_set():
+            target_bbox, observed_at = self._get_latest_target_bbox(
+                object_class=object_class,
+                min_timestamp=min_timestamp,
+            )
+            if target_bbox is not None:
+                return target_bbox, observed_at
+
+            if (time.monotonic() - start) >= timeout:
+                break
+            time.sleep(0.05)
+
+        return None, None
+
+    def _compute_centering_error(self, target_bbox):
+        center_x, _ = target_bbox.center
+        desired_center_x = (self.frame_width / 2) + self.centering_offset_x
+        return center_x - desired_center_x
+
+    def _center_target_before_pickup(self, object_class):
+        if not self.servo_control:
+            logger.warning(
+                "Servo control not initialized – cannot verify centering"
+            )
+            return False
+
+        last_required_timestamp = 0.0
+
+        # ── One-Shot ML Centering Attempt ──
+        if self.centering_model is not None:
+            target_bbox, observed_at = self._wait_for_target_bbox(
+                object_class,
+                min_timestamp=last_required_timestamp,
+            )
+            if target_bbox is not None:
+                center_x, _ = target_bbox.center
+                # Calculate pos_diff without any offset for the model
+                pos_diff = center_x - (self.frame_width / 2)
+                
+                try:
+                    # Predict required angle difference
+                    df_input = pd.DataFrame({'pos_diff': [pos_diff]})
+                    angle_diff = self.centering_model.predict(df_input)[0]
+                    logger.info(f"Predicted angle from centering model : {angle_diff}")
+                    current_base = self.servo_control.basePosition
+                    
+                    new_base = max(0, min(180, int(round(current_base + angle_diff))))
+                    
+                    logger.info(
+                        f"One-Shot ML Centering for '{object_class}': pos_diff={pos_diff:.1f}px, "
+                        f"predicted angle_diff={angle_diff:.1f}°, moving base from {current_base} to {new_base}"
+                    )
+                    
+                    if new_base != current_base:
+                        if self.servo_control.send_command(f"S1A{new_base}"):
+                            self.servo_control.basePosition = new_base
+                            time.sleep(self.centering_settle_seconds)
+                            
+                            # Verify if one-shot worked (using normal error calculation with offset)
+                            target_bbox_after, observed_at_after = self._wait_for_target_bbox(
+                                object_class,
+                                min_timestamp=time.monotonic(),
+                            )
+                            if target_bbox_after is not None:
+                                final_error = self._compute_centering_error(target_bbox_after)
+                                if abs(final_error) <= self.center_threshold:
+                                    logger.info(f"One-shot ML centering successful! Error: {final_error:.1f}px")
+                                    return True
+                                else:
+                                    logger.warning(f"One-shot ML centering not within tolerance (Error: {final_error:.1f}px > {self.center_threshold}px). Falling back to iterative algorithm.")
+                                    last_required_timestamp = observed_at_after
+                            else:
+                                 logger.warning("Lost target after one-shot move. Falling back to iterative algorithm.")
+                        else:
+                            logger.warning(f"One-shot move command failed. Falling back to iterative algorithm.")
+                    else:
+                        logger.info(f"One-shot predicted no movement. Continuing to verification.")
+                        
+                except Exception as e:
+                    logger.error(f"Error during one-shot ML prediction/movement: {e}. Falling back to iterative algorithm.")
+            else:
+                 logger.warning(f"No target found for one-shot centering. Falling back to iterative algorithm.")
+
+        # ── Fallback Iterative Algorithm ──
+        for attempt in range(1, self.centering_max_adjustments + 1):
+            target_bbox, observed_at = self._wait_for_target_bbox(
+                object_class,
+                min_timestamp=last_required_timestamp,
+            )
+            if target_bbox is None:
+                logger.warning(
+                    f"Centering failed for '{object_class}' – no fresh detection"
+                )
+                return False
+
+            centering_error = self._compute_centering_error(target_bbox)
+            logger.debug(
+                f"Centering check for '{object_class}': "
+                f"error={centering_error:.1f}px, "
+                f"threshold={self.center_threshold}px, "
+                f"offset={self.centering_offset_x}px"
+            )
+
+            if abs(centering_error) <= self.center_threshold:
+                logger.info(
+                    f"Centering complete for '{object_class}' "
+                    f"(error={centering_error:.1f}px, "
+                    f"offset={self.centering_offset_x}px)"
+                )
+                recheck_start = time.monotonic()
+                time.sleep(self.centering_settle_seconds)
+
+                target_bbox, observed_at = self._wait_for_target_bbox(
+                    object_class,
+                    min_timestamp=recheck_start,
+                )
+                if target_bbox is None:
+                    logger.warning(
+                        f"Centering recheck failed for '{object_class}' – "
+                        "target not visible after settle delay"
+                    )
+                    return False
+
+                centering_error = self._compute_centering_error(target_bbox)
+                if abs(centering_error) <= self.center_threshold:
+                    logger.info(
+                        f"Centering verified for '{object_class}' after "
+                        f"{self.centering_settle_seconds:.1f}s; proceeding"
+                    )
+                    return True
+
+                logger.info(
+                    f"Centering drift detected for '{object_class}' after "
+                    f"recheck (error={centering_error:.1f}px) – re-adjusting"
+                )
+                last_required_timestamp = observed_at or recheck_start
+                continue
+
+            current_base = self.servo_control.basePosition
+            if centering_error > 0:
+                new_base = max(
+                    0,
+                    current_base - self.centering_step_degrees,
+                )
+            else:
+                new_base = min(
+                    180,
+                    current_base + self.centering_step_degrees,
+                )
+
+            if new_base == current_base:
+                logger.warning(
+                    f"Centering failed for '{object_class}' – "
+                    f"base servo already at limit ({current_base})"
+                )
+                return False
+
+            logger.info(
+                f"Centering adjust {attempt}/{self.centering_max_adjustments} "
+                f"for '{object_class}': error={centering_error:.1f}px, "
+                f"moving base from {current_base} to {new_base}"
+            )
+            if not self.servo_control.send_command(f"S1A{new_base}"):
+                logger.warning(
+                    f"Centering move failed for '{object_class}' at base {new_base}"
+                )
+                return False
+
+            self.servo_control.basePosition = new_base
+            last_required_timestamp = time.monotonic()
+
+        logger.warning(
+            f"Centering failed for '{object_class}' – exceeded "
+            f"{self.centering_max_adjustments} adjustment attempts"
+        )
+        return False
 
     # ── Thread 1: Camera capture ──────────────────────────────────────────
 
@@ -310,6 +551,8 @@ class RoboticArmController:
             if annotated_frame is None:
                 annotated_frame = frame
 
+            self._publish_latest_detections(detections)
+
             # ── Detection stability logic ──
             if detections:
                 detections.sort(key=lambda x: x.confidence, reverse=True)
@@ -426,27 +669,14 @@ class RoboticArmController:
 
         commands = []
 
-        # 1. Center the object (compute base servo target)
-        center_x, _ = target_bbox.center
-        frame_center_x = self.frame_width / 2
-        distance_from_center = center_x - frame_center_x
-
-        if abs(distance_from_center) > self.center_threshold:
-            # Estimate how many degrees to adjust (rough mapping)
-            if distance_from_center > 0:
-                new_base = max(0, self.servo_control.basePosition - 1)
-            else:
-                new_base = min(180, self.servo_control.basePosition + 1)
-            commands.append(f"S1A{new_base}")
-            self.servo_control.basePosition = new_base
-
-        # 2. Get distance command
+        # 1. Get distance command after live centering is verified
         commands.append("DIST")
 
-        # 3. Open gripper before reaching
+        # 2. Open gripper before reaching
+        #TODO May need to use it from config
         commands.append("S5A100")
 
-        # 4. Move to pickup position (use a default middle distance)
+        # 3. Move to pickup position (use a default middle distance)
         #    The robot thread will handle DIST response and adjust if needed
         #    For now we use "20" as a reasonable default pickup distance
         if "20" in self.servo_control.positionData:
@@ -454,10 +684,10 @@ class RoboticArmController:
         elif "21" in self.servo_control.positionData:
             commands.append(self.servo_control.positionData["21"])
 
-        # 5. Close gripper
+        # 4. Close gripper
         commands.append("S5A40")
 
-        # 6. Move to disposal position
+        # 5. Move to disposal position
         disposal_map = {
             "paper": "paperDisposal",
             "metal": "metalDisposal",
@@ -467,13 +697,14 @@ class RoboticArmController:
         if disposal_key in self.servo_control.positionData:
             commands.append(self.servo_control.positionData[disposal_key])
 
-        # 7. Open gripper to release
+        # 6. Open gripper to release
+        #TODO May need to use it from config
         commands.append("S5A100")
 
-        # 8. Return to rest / neutral
-        if "rest" in self.servo_control.positionData:
+        # 7. Return to rest / neutral
+        if "neutral" in self.servo_control.positionData:
             commands.append(self.servo_control.positionData["rest"])
-        elif "neutral" in self.servo_control.positionData:
+        elif "rest" in self.servo_control.positionData:
             commands.append(self.servo_control.positionData["neutral"])
 
         return commands
@@ -501,9 +732,14 @@ class RoboticArmController:
                 f"for '{object_class}'"
             )
 
-            success = True
+            success = self._center_target_before_pickup(object_class)
+            if not success:
+                logger.warning(
+                    f"Aborting task for '{object_class}' because centering failed"
+                )
+
             for i, cmd in enumerate(commands):
-                if self._shutdown.is_set():
+                if self._shutdown.is_set() or not success:
                     break
 
                 # Special handling for DIST command
@@ -514,7 +750,7 @@ class RoboticArmController:
                         # Wait for DISTC response
                         dist_start = time.monotonic()
                         distance = None
-                        while (time.monotonic() - dist_start) < 5.0:
+                        while (time.monotonic() - dist_start) < 0.5:
                             if self.servo_control.ser.in_waiting > 0:
                                 line = (
                                     self.servo_control.ser.readline()
@@ -528,6 +764,9 @@ class RoboticArmController:
                                         logger.info(
                                             f"Distance measured: {distance}cm"
                                         )
+                                        if distance == "0" or distance == 0:
+                                            logger.critical("Distance from Arduino is 0! Sensor may be obstructed or disconnected.")
+                                        
                                         self.producer.send(
                                             "robot_telemetry",
                                             {

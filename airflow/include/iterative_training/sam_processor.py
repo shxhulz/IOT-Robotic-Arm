@@ -1,100 +1,92 @@
-import os
 import logging
-from typing import Optional
+import os
 from datetime import datetime
+from typing import Optional
 
 import cv2
 import numpy as np
 import torch
-from PIL import Image
 
 from config import (
     LABELS_DIR,
+    MATERIAL_CLASSES,
+    MIN_MASK_AREA,
+    POSTMORTEM_ANNOTATED_DIR,
+    POSTMORTEM_FEATURES_DIR,
+    SAM2_BATCH_SIZE,
     SAM2_CHECKPOINT,
     SAM2_MODEL_CFG,
-    SAM2_BATCH_SIZE,
-    MATERIAL_CLASSES,
-    MATERIAL_CLASS_TO_ID,
-    POSTMORTEM_ANNOTATED_DIR,
+    SAM2_POINTS_PER_SIDE,
+    SAM2_PRED_IOU_THRESH,
+    SAM2_STABILITY_SCORE_THRESH,
 )
+from material_classifier import MATERIAL_CLASSIFIER_AVAILABLE, MaterialClassifier
 
 logger = logging.getLogger(__name__)
 
 try:
-    from sam2.build_sam import build_sam2
     from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+    from sam2.build_sam import build_sam2
 
     SAM2_AVAILABLE = True
 except ImportError:
     SAM2_AVAILABLE = False
-    logger.warning(
-        "SAM2 library not found. Install it to use segmentation features."
-    )
-
-try:
-    import open_clip
-
-    CLIP_AVAILABLE = True
-except ImportError:
-    CLIP_AVAILABLE = False
-    logger.warning(
-        "open_clip_torch is not installed. Install it to classify SAM2 masks."
-    )
+    logger.warning("SAM2 library not found. Install it to use segmentation features.")
 
 
 class SAMProcessor:
-    """Generate YOLO-format labels using SAM2 masks + CLIP material classification."""
+    """Generate YOLO labels using SAM2 regions and zero-shot material classification."""
 
-    def __init__(self, batch_size=SAM2_BATCH_SIZE):
+    def __init__(self, batch_size: int = SAM2_BATCH_SIZE):
         if not SAM2_AVAILABLE:
             raise RuntimeError("SAM2 is not installed.")
-        if not CLIP_AVAILABLE:
-            raise RuntimeError("open_clip_torch is not installed.")
+        if not MATERIAL_CLASSIFIER_AVAILABLE:
+            raise RuntimeError("DINOv2/CLIP dependencies are not installed.")
 
-        # Ensure the checkpoint exists; download if it doesn't.
         if not os.path.exists(SAM2_CHECKPOINT):
             self._download_checkpoint(SAM2_CHECKPOINT)
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.batch_size = batch_size
-        logger.info("SAM2 using device: %s, batch_size: %d", self.device, self.batch_size)
-
-        self.sam2_model = build_sam2(
-            SAM2_MODEL_CFG, SAM2_CHECKPOINT, device=self.device
-        )
-        self.mask_generator = SAM2AutomaticMaskGenerator(self.sam2_model)
+        self.min_mask_area = MIN_MASK_AREA
         self.material_classes = MATERIAL_CLASSES
-        self.clip_min_conf = float(os.getenv("CLIP_MIN_CONFIDENCE", "0.40"))
-        self._class_colors = {
-            "paper": (60, 180, 75),
-            "plastic": (0, 130, 200),
-            "metal": (230, 25, 75),
-        }
+        self.classifier = MaterialClassifier(material_classes=self.material_classes)
+        self._class_colors = self._build_class_colors()
         self.last_run_stats = self._create_empty_run_stats()
-        self._init_clip_model()
 
-    def _init_clip_model(self):
-        model_name = os.getenv("CLIP_MODEL_NAME", "ViT-B-32")
-        pretrained = os.getenv("CLIP_PRETRAINED", "laion2b_s34b_b79k")
         logger.info(
-            "Loading CLIP model for material classification: %s (%s)",
-            model_name,
-            pretrained,
+            "Loading SAM2 on %s with points_per_side=%d pred_iou_thresh=%.2f stability_thresh=%.2f",
+            self.device,
+            SAM2_POINTS_PER_SIDE,
+            SAM2_PRED_IOU_THRESH,
+            SAM2_STABILITY_SCORE_THRESH,
         )
-        self.clip_model, _, self.clip_preprocess = open_clip.create_model_and_transforms(
-            model_name, pretrained=pretrained
+        self.sam2_model = build_sam2(
+            SAM2_MODEL_CFG,
+            SAM2_CHECKPOINT,
+            device=self.device,
+            apply_postprocessing=True,
         )
-        self.clip_model = self.clip_model.to(self.device)
-        self.clip_model.eval()
-        self.clip_tokenizer = open_clip.get_tokenizer(model_name)
+        self.mask_generator = SAM2AutomaticMaskGenerator(
+            self.sam2_model,
+            points_per_side=SAM2_POINTS_PER_SIDE,
+            pred_iou_thresh=SAM2_PRED_IOU_THRESH,
+            stability_score_thresh=SAM2_STABILITY_SCORE_THRESH,
+        )
 
-        text_prompts = [f"a photo of {name} waste" for name in self.material_classes]
-        with torch.inference_mode():
-            tokens = self.clip_tokenizer(text_prompts).to(self.device)
-            text_features = self.clip_model.encode_text(tokens)
-            self.text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-
-        logger.info("CLIP classes: %s", ", ".join(self.material_classes))
+    def _build_class_colors(self) -> dict[str, tuple[int, int, int]]:
+        palette = [
+            (60, 180, 75),
+            (0, 130, 200),
+            (230, 25, 75),
+            (245, 130, 48),
+            (145, 30, 180),
+            (70, 240, 240),
+        ]
+        return {
+            class_name: palette[idx % len(palette)]
+            for idx, class_name in enumerate(self.material_classes)
+        }
 
     def _empty_class_counts(self) -> dict:
         return {name: 0 for name in self.material_classes}
@@ -114,27 +106,23 @@ class SAMProcessor:
             "labels_rejected_low_conf": 0,
             "class_counts": self._empty_class_counts(),
             "image_summaries": [],
-            "clip_min_confidence": self.clip_min_conf,
+            "min_mask_area": self.min_mask_area,
+            "classification_batch_size": self.classifier.batch_size,
+            "clip_min_confidence": self.classifier.min_confidence,
         }
 
-    def _download_checkpoint(self, checkpoint_path: str):
-        """Downloads the SAM2 checkpoint from the official Meta repository."""
+    def _download_checkpoint(self, checkpoint_path: str) -> None:
         import urllib.request
-        # Default to hiera_large download link since it's the default in config.py
-        # You could map SAM2_CHECKPOINT to specific URLs if multiple models are supported.
+
         url = "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt"
-        logger.info("SAM2 checkpoint not found. Downloading from %s to %s", url, checkpoint_path)
+        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+        logger.info("Downloading SAM2 checkpoint from %s to %s", url, checkpoint_path)
         try:
             urllib.request.urlretrieve(url, checkpoint_path)
-            logger.info("SAM2 checkpoint downloaded successfully.")
-        except Exception as e:
-            logger.error("Failed to download SAM2 checkpoint: %s", e)
-            raise RuntimeError(f"Could not download SAM2 checkpoint from {url}") from e
+        except Exception as exc:
+            raise RuntimeError(f"Could not download SAM2 checkpoint from {url}") from exc
 
     def process_images(self, image_paths: list[str]) -> int:
-        """Process a list of images and write YOLO label files.
-        Uses configurable batch_size and torch.inference_mode.
-        """
         success_count = 0
         total_images = len(image_paths)
 
@@ -142,28 +130,14 @@ class SAMProcessor:
         self.last_run_stats["started_at"] = datetime.utcnow().isoformat() + "Z"
         self.last_run_stats["total_images"] = total_images
 
-        # Process in batches
-        with torch.inference_mode(), torch.autocast(self.device.type, dtype=torch.bfloat16):
-            for i in range(0, total_images, self.batch_size):
-                batch_paths = image_paths[i : i + self.batch_size]
-
-                for p_idx, image_path in enumerate(batch_paths):
-                    global_idx = i + p_idx + 1
+        with torch.no_grad():
+            for start_idx in range(0, total_images, self.batch_size):
+                batch_paths = image_paths[start_idx : start_idx + self.batch_size]
+                for offset, image_path in enumerate(batch_paths, start=1):
+                    global_idx = start_idx + offset
                     try:
                         summary = self._process_single_image(image_path)
-                        self.last_run_stats["processed_images"] += 1
-                        if summary["mask_count"] > 0:
-                            self.last_run_stats["images_with_masks"] += 1
-                        if summary["accepted_labels"] > 0:
-                            self.last_run_stats["images_with_labels"] += 1
-                        else:
-                            self.last_run_stats["images_without_labels"] += 1
-                        self.last_run_stats["total_masks"] += summary["mask_count"]
-                        self.last_run_stats["labels_written"] += summary["accepted_labels"]
-                        self.last_run_stats["labels_rejected_low_conf"] += summary["rejected_low_conf"]
-                        for class_name, count in summary["class_counts"].items():
-                            self.last_run_stats["class_counts"][class_name] += count
-                        self.last_run_stats["image_summaries"].append(summary)
+                        self._update_run_stats(summary)
                         success_count += 1
                     except Exception:
                         self.last_run_stats["failed_images"].append(os.path.basename(image_path))
@@ -174,132 +148,171 @@ class SAMProcessor:
                             image_path,
                         )
 
-                    if global_idx % max(1, self.batch_size) == 0:
-                        logger.info(
-                            "SAM2 progress: %d / %d images processed.",
-                            global_idx,
-                            total_images,
-                        )
+                    if global_idx % max(1, self.batch_size) == 0 or global_idx == total_images:
+                        logger.info("SAM2 progress: %d / %d images processed.", global_idx, total_images)
 
-        logger.info(
-            "SAM2 finished: %d / %d images processed successfully.",
-            success_count,
-            total_images,
-        )
         self.last_run_stats["finished_at"] = datetime.utcnow().isoformat() + "Z"
         logger.info(
-            "SAM2 postmortem summary: images_with_masks=%d, images_with_labels=%d, "
-            "images_without_labels=%d, labels_written=%d, rejected_low_conf=%d",
-            self.last_run_stats["images_with_masks"],
-            self.last_run_stats["images_with_labels"],
-            self.last_run_stats["images_without_labels"],
+            "Labeling finished: processed=%d/%d images labels_written=%d rejected_low_conf=%d",
+            success_count,
+            total_images,
             self.last_run_stats["labels_written"],
             self.last_run_stats["labels_rejected_low_conf"],
         )
         logger.info("Class totals: %s", self.last_run_stats["class_counts"])
         return success_count
 
+    def _update_run_stats(self, summary: dict) -> None:
+        self.last_run_stats["processed_images"] += 1
+        if summary["mask_count"] > 0:
+            self.last_run_stats["images_with_masks"] += 1
+        if summary["accepted_labels"] > 0:
+            self.last_run_stats["images_with_labels"] += 1
+        else:
+            self.last_run_stats["images_without_labels"] += 1
+        self.last_run_stats["total_masks"] += summary["mask_count"]
+        self.last_run_stats["labels_written"] += summary["accepted_labels"]
+        self.last_run_stats["labels_rejected_low_conf"] += summary["rejected_low_conf"]
+        for class_name, count in summary["class_counts"].items():
+            self.last_run_stats["class_counts"][class_name] += count
+        self.last_run_stats["image_summaries"].append(summary)
+
     def _process_single_image(self, image_path: str) -> dict:
-        """Generate masks for a single image and save labels + annotated preview."""
-        image = cv2.imread(image_path)
-        if image is None:
-            logger.warning("Could not read image (corrupt or missing): %s", image_path)
+        image_bgr = cv2.imread(image_path)
+        if image_bgr is None:
+            logger.warning("Could not read image: %s", image_path)
             return self._build_image_summary(image_path, 0, 0, 0, [])
 
-        h, w = image.shape[:2]
-        if h == 0 or w == 0:
+        height, width = image_bgr.shape[:2]
+        if height == 0 or width == 0:
             logger.warning("Image has zero dimension: %s", image_path)
             return self._build_image_summary(image_path, 0, 0, 0, [])
 
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         masks = self.mask_generator.generate(image_rgb)
-        mask_count = len(masks)
+        candidate_regions = self._extract_candidate_regions(image_rgb, masks)
+        if not candidate_regions:
+            logger.info("No usable SAM2 masks for %s", image_path)
+            return self._build_image_summary(image_path, len(masks), 0, 0, [])
 
-        if not masks:
-            logger.info("SAM2 produced no masks for %s", image_path)
-            return self._build_image_summary(image_path, 0, 0, 0, [])
+        crops = [candidate["crop"] for candidate in candidate_regions]
+        predictions = self.classifier.classify_crops(crops)
+
+        detections = []
+        rejected_low_conf = 0
+        embeddings = []
 
         label_filename = os.path.splitext(os.path.basename(image_path))[0] + ".txt"
         label_path = os.path.join(LABELS_DIR, label_filename)
-
-        detections = []
-        written = 0
-        rejected_low_conf = 0
-        with open(label_path, "w") as f:
-            for mask in masks:
-                bbox = mask["bbox"]  # [x, y, w_box, h_box] (absolute pixels)
-
-                # Skip degenerate boxes
-                if bbox[2] <= 0 or bbox[3] <= 0:
-                    continue
-
-                # Convert to YOLO normalized format:
-                #   class  x_center  y_center  width  height
-                cls_result = self._classify_material(image_rgb, bbox)
-                if cls_result is None:
+        with open(label_path, "w", encoding="utf-8") as handle:
+            for candidate, prediction in zip(candidate_regions, predictions):
+                if prediction is None:
                     rejected_low_conf += 1
                     continue
-                class_id, class_name, class_conf = cls_result
-                x_center = (bbox[0] + bbox[2] / 2) / w
-                y_center = (bbox[1] + bbox[3] / 2) / h
-                norm_w = bbox[2] / w
-                norm_h = bbox[3] / h
 
-                # Clamp to [0, 1] for safety
+                bbox = candidate["bbox"]
+                x_center = (bbox[0] + bbox[2] / 2.0) / width
+                y_center = (bbox[1] + bbox[3] / 2.0) / height
+                norm_w = bbox[2] / width
+                norm_h = bbox[3] / height
+
                 x_center = max(0.0, min(1.0, x_center))
                 y_center = max(0.0, min(1.0, y_center))
                 norm_w = max(0.0, min(1.0, norm_w))
                 norm_h = max(0.0, min(1.0, norm_h))
 
-                f.write(
-                    f"{class_id} {x_center:.6f} {y_center:.6f} "
-                    f"{norm_w:.6f} {norm_h:.6f}\n"
+                handle.write(
+                    f"{prediction.class_id} {x_center:.6f} {y_center:.6f} {norm_w:.6f} {norm_h:.6f}\n"
                 )
-                detections.append({
-                    "class_id": class_id,
-                    "class_name": class_name,
-                    "confidence": round(float(class_conf), 4),
-                    "bbox": [float(v) for v in bbox],
-                })
-                written += 1
 
-        if written == 0:
+                detections.append(
+                    {
+                        "class_id": prediction.class_id,
+                        "class_name": prediction.class_name,
+                        "confidence": round(prediction.confidence, 4),
+                        "bbox": [float(v) for v in bbox],
+                        "mask_area": candidate["mask_area"],
+                        "predicted_iou": candidate["predicted_iou"],
+                        "stability_score": candidate["stability_score"],
+                        "clip_scores": {
+                            key: round(value, 4)
+                            for key, value in prediction.clip_scores.items()
+                        },
+                    }
+                )
+                embeddings.append(prediction.dino_embedding)
+
+        if not detections:
             os.remove(label_path)
-            logger.info("No confident material labels for %s", image_path)
             logger.info(
-                "Image %s summary: masks=%d accepted=0 rejected_low_conf=%d",
+                "No confident material labels for %s. masks=%d rejected_low_conf=%d",
                 os.path.basename(image_path),
-                mask_count,
+                len(masks),
                 rejected_low_conf,
             )
             return self._build_image_summary(
                 image_path,
-                mask_count,
+                len(masks),
                 0,
                 rejected_low_conf,
-                detections,
+                [],
             )
 
-        annotated_path = self._write_annotated_image(image, image_path, detections)
+        annotated_path = self._write_annotated_image(image_bgr, image_path, detections)
+        feature_path = self._write_feature_archive(image_path, detections, embeddings)
         class_counts = self._class_counts_for_detections(detections)
         logger.info(
-            "Image %s summary: masks=%d accepted=%d rejected_low_conf=%d class_counts=%s annotated=%s",
+            "Image %s summary: masks=%d candidates=%d accepted=%d rejected_low_conf=%d class_counts=%s",
             os.path.basename(image_path),
-            mask_count,
-            written,
+            len(masks),
+            len(candidate_regions),
+            len(detections),
             rejected_low_conf,
             class_counts,
-            annotated_path,
         )
         return self._build_image_summary(
             image_path,
-            mask_count,
-            written,
+            len(masks),
+            len(detections),
             rejected_low_conf,
             detections,
             annotated_path=annotated_path,
+            feature_path=feature_path,
             label_path=label_path,
         )
+
+    def _extract_candidate_regions(self, image_rgb: np.ndarray, masks: list[dict]) -> list[dict]:
+        candidates = []
+        for mask in masks:
+            bbox = [int(v) for v in mask["bbox"]]
+            if bbox[2] <= 0 or bbox[3] <= 0:
+                continue
+
+            mask_area = int(mask.get("area", 0))
+            if mask_area < self.min_mask_area:
+                continue
+
+            x1 = max(0, bbox[0])
+            y1 = max(0, bbox[1])
+            x2 = min(image_rgb.shape[1], bbox[0] + bbox[2])
+            y2 = min(image_rgb.shape[0], bbox[1] + bbox[3])
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            crop = image_rgb[y1:y2, x1:x2]
+            if crop.size == 0:
+                continue
+
+            candidates.append(
+                {
+                    "bbox": [x1, y1, x2 - x1, y2 - y1],
+                    "crop": crop,
+                    "mask_area": mask_area,
+                    "predicted_iou": float(mask.get("predicted_iou", 0.0)),
+                    "stability_score": float(mask.get("stability_score", 0.0)),
+                }
+            )
+        return candidates
 
     def _build_image_summary(
         self,
@@ -309,6 +322,7 @@ class SAMProcessor:
         rejected_low_conf: int,
         detections: list,
         annotated_path: Optional[str] = None,
+        feature_path: Optional[str] = None,
         label_path: Optional[str] = None,
     ) -> dict:
         return {
@@ -321,6 +335,7 @@ class SAMProcessor:
             "detections": detections,
             "label_path": label_path,
             "annotated_path": annotated_path,
+            "feature_path": feature_path,
         }
 
     def _class_counts_for_detections(self, detections: list) -> dict:
@@ -328,6 +343,25 @@ class SAMProcessor:
         for det in detections:
             counts[det["class_name"]] += 1
         return counts
+
+    def _write_feature_archive(
+        self,
+        image_path: str,
+        detections: list[dict],
+        embeddings: list[np.ndarray],
+    ) -> str:
+        base_name = os.path.splitext(os.path.basename(image_path))[0]
+        feature_path = os.path.join(POSTMORTEM_FEATURES_DIR, f"{base_name}_dinov2.npz")
+        np.savez_compressed(
+            feature_path,
+            image_name=np.array([os.path.basename(image_path)]),
+            labels=np.array([det["class_name"] for det in detections]),
+            class_ids=np.array([det["class_id"] for det in detections], dtype=np.int64),
+            confidences=np.array([det["confidence"] for det in detections], dtype=np.float32),
+            bboxes=np.array([det["bbox"] for det in detections], dtype=np.float32),
+            embeddings=np.stack(embeddings).astype(np.float32),
+        )
+        return feature_path
 
     def _write_annotated_image(self, image_bgr: np.ndarray, image_path: str, detections: list) -> str:
         rendered = image_bgr.copy()
@@ -358,36 +392,6 @@ class SAMProcessor:
         annotated_path = os.path.join(POSTMORTEM_ANNOTATED_DIR, f"{base_name}_annotated.jpg")
         cv2.imwrite(annotated_path, rendered)
         return annotated_path
-
-    def _classify_material(self, image_rgb: np.ndarray, bbox: list[float]) -> Optional[tuple[int, str, float]]:
-        """Classify a SAM2 mask crop into paper/plastic/metal using CLIP."""
-        x, y, w_box, h_box = bbox
-        x1 = max(0, int(x))
-        y1 = max(0, int(y))
-        x2 = min(image_rgb.shape[1], int(x + w_box))
-        y2 = min(image_rgb.shape[0], int(y + h_box))
-
-        if x2 <= x1 or y2 <= y1:
-            return None
-
-        crop = image_rgb[y1:y2, x1:x2]
-        if crop.size == 0:
-            return None
-
-        pil_crop = Image.fromarray(crop)
-        image_tensor = self.clip_preprocess(pil_crop).unsqueeze(0).to(self.device)
-
-        with torch.inference_mode():
-            image_features = self.clip_model.encode_image(image_tensor)
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-            probs = (100.0 * image_features @ self.text_features.T).softmax(dim=-1)
-            best_prob, best_idx = torch.max(probs[0], dim=0)
-
-        if float(best_prob.item()) < self.clip_min_conf:
-            return None
-
-        class_name = self.material_classes[int(best_idx.item())]
-        return MATERIAL_CLASS_TO_ID[class_name], class_name, float(best_prob.item())
 
     def get_run_stats(self) -> dict:
         return self.last_run_stats

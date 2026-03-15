@@ -92,11 +92,14 @@ class TestDAGStructure:
                 assert task.task_type == "DockerOperator", (
                     f"Task '{task.task_id}' is {task.task_type}, expected DockerOperator"
                 )
-                assert task.image == "ultralytics/ultralytics:latest"
+                assert task.image == "robotic-arm-material-pipeline:latest"
+                assert task.user == "0:0"
                 assert task.auto_remove == "force"
                 assert task.docker_url == "unix://var/run/docker.sock"
-                assert len(task.mounts) == 1
-                assert task.mounts[0]['Target'] == "/usr/local/airflow/include"
+                assert len(task.mounts) == 2
+                targets = {mount["Target"] for mount in task.mounts}
+                assert "/opt/iterative_training/data" in targets
+                assert "/models" in targets
                 assert len(task.device_requests) == 1
                 # network_mode should NOT be 'bridge' — it must join the
                 # Astro project network so it can resolve 'minio' hostname.
@@ -111,6 +114,7 @@ class TestDAGStructure:
                 assert "MLFLOW_EXPERIMENT_NAME" in task.environment, (
                     "MLFLOW_EXPERIMENT_NAME must be in DockerOperator environment"
                 )
+                assert task.environment["MODEL_CACHE_DIR"] == "/models"
             else:
                 assert task.task_type == "BashOperator", (
                     f"Task '{task.task_id}' is {task.task_type}, expected BashOperator"

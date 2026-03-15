@@ -11,19 +11,30 @@ from datetime import datetime
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from config import (
     IMAGES_DIR,
+    MATERIAL_CLASSES,
     POSTMORTEM_DIR,
     POSTMORTEM_REPORTS_DIR,
     POSTMORTEM_ANNOTATED_DIR,
+    POSTMORTEM_FEATURES_DIR,
     MINIO_POSTMORTEM_PREFIX,
     MINIO_BUCKET_NAME,
 )
-from sam_processor import SAMProcessor, SAM2_AVAILABLE, CLIP_AVAILABLE
+from sam_processor import SAMProcessor, SAM2_AVAILABLE
+from material_classifier import MATERIAL_CLASSIFIER_AVAILABLE
 from minio_handler import MinioHandler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 VALID_EXTENSIONS = {".png", ".jpg", ".jpeg"}
+IGNORED_IMAGE_MARKERS = ("_annotated",)
+
+
+def _is_source_image(file_name: str) -> bool:
+    lower_name = file_name.lower()
+    if os.path.splitext(lower_name)[1] not in VALID_EXTENSIONS:
+        return False
+    return not any(marker in lower_name for marker in IGNORED_IMAGE_MARKERS)
 
 
 def _write_reports(stats: dict) -> dict:
@@ -37,19 +48,13 @@ def _write_reports(stats: dict) -> dict:
     csv_path = os.path.join(POSTMORTEM_REPORTS_DIR, f"sam2_image_summary_{timestamp}.csv")
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(
-            [
-                "image_name",
-                "mask_count",
-                "accepted_labels",
-                "rejected_low_conf",
-                "paper",
-                "plastic",
-                "metal",
-                "label_path",
-                "annotated_path",
-            ]
-        )
+        header = [
+            "image_name",
+            "mask_count",
+            "accepted_labels",
+            "rejected_low_conf",
+        ] + MATERIAL_CLASSES + ["label_path", "annotated_path", "feature_path"]
+        writer.writerow(header)
         for item in stats.get("image_summaries", []):
             class_counts = item.get("class_counts", {})
             writer.writerow(
@@ -58,17 +63,16 @@ def _write_reports(stats: dict) -> dict:
                     item.get("mask_count", 0),
                     item.get("accepted_labels", 0),
                     item.get("rejected_low_conf", 0),
-                    class_counts.get("paper", 0),
-                    class_counts.get("plastic", 0),
-                    class_counts.get("metal", 0),
+                    *[class_counts.get(class_name, 0) for class_name in MATERIAL_CLASSES],
                     item.get("label_path"),
                     item.get("annotated_path"),
+                    item.get("feature_path"),
                 ]
             )
 
     txt_path = os.path.join(POSTMORTEM_REPORTS_DIR, f"sam2_postmortem_{timestamp}.txt")
     with open(txt_path, "w", encoding="utf-8") as f:
-        f.write("SAM2 + CLIP Postmortem\n")
+        f.write("SAM2 + DINOv2 + CLIP Postmortem\n")
         f.write(f"started_at: {stats.get('started_at')}\n")
         f.write(f"finished_at: {stats.get('finished_at')}\n")
         f.write(f"total_images: {stats.get('total_images')}\n")
@@ -108,12 +112,19 @@ def _upload_postmortem_to_minio(timestamp: str) -> None:
         f"{object_prefix}/reports",
         bucket_name=MINIO_BUCKET_NAME,
     )
+    features_result = handler.upload_directory(
+        POSTMORTEM_FEATURES_DIR,
+        f"{object_prefix}/features",
+        bucket_name=MINIO_BUCKET_NAME,
+    )
     logger.info(
-        "MinIO upload complete: annotated(uploaded=%d, failed=%d), reports(uploaded=%d, failed=%d)",
+        "MinIO upload complete: annotated(uploaded=%d, failed=%d), reports(uploaded=%d, failed=%d), features(uploaded=%d, failed=%d)",
         annotated_result["uploaded"],
         annotated_result["failed"],
         reports_result["uploaded"],
         reports_result["failed"],
+        features_result["uploaded"],
+        features_result["failed"],
     )
 
 
@@ -121,21 +132,21 @@ def main():
     if not SAM2_AVAILABLE:
         logger.error("SAM2 is not installed in this environment.")
         sys.exit(1)
-    if not CLIP_AVAILABLE:
-        logger.error("open_clip_torch is not installed in this environment.")
+    if not MATERIAL_CLASSIFIER_AVAILABLE:
+        logger.error("DINOv2/CLIP dependencies are not installed in this environment.")
         sys.exit(1)
 
     image_paths = [
         os.path.join(IMAGES_DIR, f)
         for f in os.listdir(IMAGES_DIR)
-        if os.path.splitext(f)[1].lower() in VALID_EXTENSIONS
+        if _is_source_image(f)
     ]
 
     if not image_paths:
         logger.error("No images found in %s after download step.", IMAGES_DIR)
         sys.exit(1)
 
-    logger.info("Processing %d images with SAM2...", len(image_paths))
+    logger.info("Processing %d images with SAM2 + DINOv2 + CLIP...", len(image_paths))
     logger.info(
         "Postmortem output directories: root=%s, annotated=%s, reports=%s",
         POSTMORTEM_DIR,

@@ -17,6 +17,11 @@ dependencies = [
     "kafka-python-ng>=2.2.3",
     "lap>=0.5.12",
     "minio>=7.2.20",
+    "matplotlib>=3.10.8",
+    "pandas<3",
+    "scikit-learn>=1.8.0",
+    "joblib>=1.5.3",
+    "mlflow>=2.0",
 ]
 
 [[tool.uv.index]]

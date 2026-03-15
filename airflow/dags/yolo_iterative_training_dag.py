@@ -13,18 +13,32 @@ Uses BashOperator to invoke standalone Python scripts from
 include/iterative_training/scripts/. Each script manages its own
 imports via sys.path — no external package resolution needed.
 """
+import os
 from datetime import timedelta
 
 from airflow import DAG
-from airflow.providers.standard.operators.bash import BashOperator
 from airflow.providers.docker.operators.docker import DockerOperator
-from docker.types import Mount, DeviceRequest
+from airflow.providers.standard.operators.bash import BashOperator
+from docker.types import DeviceRequest, Mount
 from pendulum import datetime
-import os
 
 SCRIPTS_DIR = "/usr/local/airflow/include/iterative_training/scripts"
-HOST_INCLUDE_DIR = os.getenv("HOST_INCLUDE_DIR", "d:/RoboticArm/IOT-Robotic-Arm/airflow/include")
+CONTAINER_APP_DIR = "/opt/iterative_training"
+CONTAINER_SCRIPTS_DIR = f"{CONTAINER_APP_DIR}/scripts"
+HOST_ITERATIVE_DATA_DIR = os.getenv(
+    "HOST_ITERATIVE_DATA_DIR",
+    "d:/RoboticArm/IOT-Robotic-Arm/airflow/include/iterative_training/data",
+)
+HOST_MODEL_CACHE_DIR = os.getenv(
+    "HOST_MODEL_CACHE_DIR",
+    "d:/RoboticArm/IOT-Robotic-Arm/airflow/models",
+)
 DOCKER_NETWORK = os.getenv("ASTRO_DOCKER_NETWORK", "airflow_918bcf_airflow")
+PIPELINE_IMAGE = os.getenv(
+    "ITERATIVE_PIPELINE_IMAGE",
+    "robotic-arm-material-pipeline:latest",
+)
+PIPELINE_CONTAINER_USER = os.getenv("ITERATIVE_PIPELINE_CONTAINER_USER", "0:0")
 
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
 MLFLOW_EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME", "yolo-iterative-training")
@@ -46,16 +60,30 @@ with DAG(
     schedule=timedelta(hours=12),
     start_date=datetime(2025, 3, 7),
     catchup=False,
-    tags=["yolo", "sam2", "training", "iterative", "mlflow"],
-    max_active_runs=1,  
+    tags=["yolo", "sam2", "dinov2", "clip", "training", "iterative", "mlflow"],
+    max_active_runs=1,
 ) as dag:
 
     env = {
         "MINIO_ENDPOINT": "host.docker.internal:9000",
         "USE_CUDA": "True",
+        "MODEL_CACHE_DIR": "/models",
         "MLFLOW_TRACKING_URI": MLFLOW_TRACKING_URI,
         "MLFLOW_EXPERIMENT_NAME": MLFLOW_EXPERIMENT_NAME,
     }
+
+    gpu_mounts = [
+        Mount(
+            source=HOST_ITERATIVE_DATA_DIR,
+            target=f"{CONTAINER_APP_DIR}/data",
+            type="bind",
+        ),
+        Mount(
+            source=HOST_MODEL_CACHE_DIR,
+            target="/models",
+            type="bind",
+        ),
+    ]
 
     t_prepare = BashOperator(
         task_id="prepare_workspace",
@@ -71,25 +99,16 @@ with DAG(
 
     t_sam2 = DockerOperator(
         task_id="process_with_sam2",
-        image="ultralytics/ultralytics:latest",
-        command=(
-            f"bash -c 'pip install git+https://github.com/facebookresearch/sam2.git "
-            "open_clip_torch minio && "
-            f"python {SCRIPTS_DIR}/process_sam2.py'"
-        ),
-        mounts=[
-            Mount(
-                source=HOST_INCLUDE_DIR, 
-                target="/usr/local/airflow/include", 
-                type="bind"
-            )
-        ],
+        image=PIPELINE_IMAGE,
+        command=f"python {CONTAINER_SCRIPTS_DIR}/process_sam2.py",
+        user=PIPELINE_CONTAINER_USER,
+        mounts=gpu_mounts,
         docker_url="unix://var/run/docker.sock",
         network_mode=DOCKER_NETWORK,
         auto_remove="force",
         mount_tmp_dir=False,
         environment=env,
-        device_requests=[DeviceRequest(count=-1, capabilities=[['gpu']])],
+        device_requests=[DeviceRequest(count=-1, capabilities=[["gpu"]])],
         shm_size="8g",
     )
 
@@ -101,23 +120,17 @@ with DAG(
 
     t_train = DockerOperator(
         task_id="train_yolo",
-        image="ultralytics/ultralytics:latest",
-        command=f"bash -c 'pip install mlflow boto3 && python {SCRIPTS_DIR}/train_yolo.py'",
-        mounts=[
-            Mount(
-                source=HOST_INCLUDE_DIR, 
-                target="/usr/local/airflow/include", 
-                type="bind"
-            )
-        ],
+        image=PIPELINE_IMAGE,
+        command=f"python {CONTAINER_SCRIPTS_DIR}/train_yolo.py",
+        user=PIPELINE_CONTAINER_USER,
+        mounts=gpu_mounts,
         docker_url="unix://var/run/docker.sock",
         network_mode=DOCKER_NETWORK,
         auto_remove="force",
         mount_tmp_dir=False,
         environment=env,
-        device_requests=[DeviceRequest(count=-1, capabilities=[['gpu']])],
-        force_pull=True,
-        shm_size="8g", 
+        device_requests=[DeviceRequest(count=-1, capabilities=[["gpu"]])],
+        shm_size="8g",
     )
 
     t_promote = BashOperator(

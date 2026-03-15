@@ -10,6 +10,7 @@ from config import (
     YOLO_MODEL_PATH,
     YOLO_BASE_MODEL,
     YOLO_TRAIN_EPOCHS,
+    YOLO_TRAIN_PATIENCE
     YOLO_IMG_SIZE,
     MLFLOW_TRACKING_URI,
     MLFLOW_EXPERIMENT_NAME,
@@ -101,7 +102,7 @@ class YOLOTrainer:
                     counts[class_name] += 1
         return counts
 
-    def train(self, epochs=YOLO_TRAIN_EPOCHS, img_size=YOLO_IMG_SIZE):
+    def train(self, epochs=YOLO_TRAIN_EPOCHS, img_size=YOLO_IMG_SIZE, patience = YOLO_TRAIN_PATIENCE):
         """Trains the YOLO model with MLflow tracking."""
         self.create_data_yaml()
 
@@ -147,6 +148,7 @@ class YOLOTrainer:
                 "epochs": epochs,
                 "img_size": img_size,
                 "device": device,
+                "patience" : patience
                 "base_model": str(self.model.model_name)
                 if hasattr(self.model, "model_name")
                 else "unknown",
@@ -157,6 +159,7 @@ class YOLOTrainer:
                 epochs=epochs,
                 imgsz=img_size,
                 device=device,
+                patience = patience
                 project=os.path.join(TRAINING_DATA_DIR, "runs"),
                 name="train",
                 exist_ok=False,

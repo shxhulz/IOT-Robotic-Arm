@@ -7,3 +7,6 @@ __pycache__
 *.pyc
 *.jpg
 *.png
+/include/iterative_traning/data
+
+Lib

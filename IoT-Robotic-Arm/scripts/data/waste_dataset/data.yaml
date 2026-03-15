@@ -1,0 +1,8 @@
+names:
+  0: plastic
+  1: paper
+  2: metal
+nc: 3
+path: D:\RoboticArm\IOT-Robotic-Arm\IoT-Robotic-Arm\scripts\data\waste_dataset
+train: images/train
+val: images/val

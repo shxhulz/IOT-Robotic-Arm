@@ -7,7 +7,7 @@ import shutil
 import logging
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from config import IMAGES_DIR, LABELS_DIR, TRAINING_DATA_DIR
+from config import IMAGES_DIR, LABELS_DIR, MATERIAL_CLASSES, TRAINING_DATA_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -17,8 +17,9 @@ SPLIT_RATIO = 0.8
 
 
 def _collect_split_class_counts(labels_dir: str) -> dict:
-    counts = {"paper": 0, "plastic": 0, "metal": 0, "unknown": 0}
-    class_map = {"0": "paper", "1": "plastic", "2": "metal"}
+    counts = {name: 0 for name in MATERIAL_CLASSES}
+    counts["unknown"] = 0
+    class_map = {str(idx): name for idx, name in enumerate(MATERIAL_CLASSES)}
 
     label_files = [
         f for f in os.listdir(labels_dir)

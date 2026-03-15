@@ -18,16 +18,18 @@ class ServoControl:
         self.basePosition = 90
 
         self.positionData = {
-            "17": "S2A58S3A150S4A115S5A105",
-            "18": "S2A52S3A145S4A115S5A105",
-            "19": "S2A50S3A138S4A115S5A105",
-            "20": "S2A50S3A138S4A115S5A105",
-            "21": "S2A42S3A128S4A120S5A105",
-            "22": "S2A40S3A124S4A120S5A105",
-            "23": "S2A38S3A122S4A120S5A105",
-            "24": "S2A26S3A103S4A120S5A105",
-            "25": "S2A25S3A100S4A115S5A105",
-            "26": "S2A10S3A88S4A115S5A105",
+            "15": "S2A58S3A150S4A102S5A105",
+            "16": "S2A58S3A150S4A102S5A105",
+            "17": "S2A52S3A145S4A102S5A105",
+            "18": "S2A50S3A138S4A102S5A105",
+            "19": "S2A50S3A138S4A102S5A105",
+            "20": "S2A42S3A128S4A107S5A105",
+            "21": "S2A40S3A124S4A107S5A105",
+            "22": "S2A38S3A122S4A107S5A105",
+            "23": "S2A26S3A103S4A107S5A105",
+            "24": "S2A25S3A100S4A102S5A105",
+            "25": "S2A10S3A88S4A102S5A105",
+            "26": "S2A10S3A88S4A102S5A105",
             "rest": "S1A75S2A80S3A145S4A70S5A90",
             "neutral": "S1A90S2A90S3A90S4A90",
             "paperDisposal": "S1A70S2A120S3A40",
@@ -53,7 +55,7 @@ class ServoControl:
             True if OK was received, False on timeout.
         """
         full_command = cmd_string.strip() + "\n"
-        logger.debug(f"Serial TX: {full_command.strip()}")
+        logger.info(f"Command Sent to Arduino: {cmd_string.strip()}")
         self.ser.write(full_command.encode("utf-8"))
         return self.wait_for_ok(timeout=SERIAL_OK_TIMEOUT)
 

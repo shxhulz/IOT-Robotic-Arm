@@ -13,6 +13,7 @@ from config import (
     LABELS_DIR,
     TRAINING_DATA_DIR,
     POSTMORTEM_ANNOTATED_DIR,
+    POSTMORTEM_FEATURES_DIR,
     POSTMORTEM_REPORTS_DIR,
 )
 
@@ -37,7 +38,13 @@ def main():
     except Exception as e:
         logger.warning("Could not check CUDA availability: %s", e)
 
-    for directory in [IMAGES_DIR, LABELS_DIR, POSTMORTEM_ANNOTATED_DIR, POSTMORTEM_REPORTS_DIR]:
+    for directory in [
+        IMAGES_DIR,
+        LABELS_DIR,
+        POSTMORTEM_ANNOTATED_DIR,
+        POSTMORTEM_FEATURES_DIR,
+        POSTMORTEM_REPORTS_DIR,
+    ]:
         if os.path.exists(directory):
             shutil.rmtree(directory)
             logger.info("Cleaned directory: %s", directory)

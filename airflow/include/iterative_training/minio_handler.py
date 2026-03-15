@@ -7,6 +7,7 @@ from config import (
     MINIO_ACCESS_KEY,
     MINIO_SECRET_KEY,
     MINIO_BUCKET_NAME,
+    MINIO_EXCLUDE_PREFIXES,
     MINIO_SECURE,
     IMAGES_DIR,
 )
@@ -17,6 +18,7 @@ from minio.error import S3Error
 logger = logging.getLogger(__name__)
 
 VALID_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
+ANNOTATED_FILE_MARKER = "_annotated"
 
 
 class MinioHandler:
@@ -54,6 +56,18 @@ class MinioHandler:
 
             ext = os.path.splitext(obj.object_name)[1].lower()
             if ext not in VALID_IMAGE_EXTENSIONS:
+                skipped_non_images += 1
+                continue
+
+            normalized_name = obj.object_name.replace("\\", "/").lstrip("/")
+            if any(
+                normalized_name.startswith(f"{prefix}/") or normalized_name == prefix
+                for prefix in MINIO_EXCLUDE_PREFIXES
+            ):
+                skipped_non_images += 1
+                continue
+
+            if ANNOTATED_FILE_MARKER in os.path.basename(normalized_name):
                 skipped_non_images += 1
                 continue
 
